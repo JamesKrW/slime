@@ -28,6 +28,17 @@ def train(args):
     if args.check_weight_update_equal:
         ray.get(rollout_manager.check_weights.remote(action="compare"))
 
+    # The untrained baseline, before the first generation is launched. This is the only
+    # window for it: from the next line on there is always a rollout in flight against the
+    # same engines, and RolloutManager serves one call at a time -- an eval later would
+    # either queue behind a generation or contend with it.
+    #
+    # Weights are already on the engines (update_weights above), so nothing else is
+    # needed. train.py has always done this; async simply never did, which left every
+    # async run without the one point that says whether the curve went anywhere.
+    if args.eval_interval is not None and not args.skip_eval_before_train:
+        ray.get(rollout_manager.eval.remote(args.start_rollout_id))
+
     # async train loop.
     rollout_data_next_future = rollout_manager.generate.remote(args.start_rollout_id)
     for rollout_id in range(args.start_rollout_id, args.num_rollout):
