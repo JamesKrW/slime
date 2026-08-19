@@ -202,6 +202,12 @@ def get_optimizer_param_scheduler(args: Namespace, optimizer: MegatronOptimizer)
     # plateau slightly early or late. Pass ``--lr-decay-iters`` explicitly if you
     # need exact decay control.
     args.train_iters = args.num_rollout * args.rollout_batch_size * args.n_samples_per_prompt // args.global_batch_size
+    # `--num-rollout 0` is train.py's eval-only mode, and it makes train_iters 0, which
+    # OptimizerParamScheduler rejects (`assert self.lr_decay_steps > 0`) while the actor is
+    # still being constructed -- so the eval-only path could never be reached on the
+    # Megatron backend. Floor it: no optimizer step is taken in that mode, so the schedule
+    # this produces is never read.
+    args.train_iters = max(1, args.train_iters)
     if args.lr_decay_iters is None:
         args.lr_decay_iters = args.train_iters
     lr_decay_steps = args.lr_decay_iters * args.global_batch_size
