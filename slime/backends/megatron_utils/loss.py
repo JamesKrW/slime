@@ -771,10 +771,33 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
         rewards = []
         kl_coef = -args.kl_coef
         cp_rank = mpu.get_context_parallel_rank()
+        cp_size = mpu.get_context_parallel_world_size()
         for reward, k in zip(old_rewards, kl, strict=False):
             k *= kl_coef
-            if cp_rank == 0:
-                k[-1] += reward
+            if isinstance(reward, (int, float)):
+                # One outcome reward for the whole sequence: credit it at the last token.
+                if cp_rank == 0:
+                    k[-1] += reward
+            else:
+                # A per-token reward, already aligned to the response. This is the shape
+                # get_advantages_and_returns_batch documents ("rewards_list: list[Tensor],
+                # each shape = [resp_len_i]"); the scalar branch above only exists to build
+                # it. An environment that scores individual turns -- or spans within a turn
+                # -- can therefore hand its rewards straight through.
+                if cp_size > 1:
+                    raise NotImplementedError(
+                        "per-token rewards with context parallelism: the vector covers the "
+                        "whole response while each CP rank holds a shard of it, so it would "
+                        "have to be sliced the way slice_log_prob_with_cp slices log-probs. "
+                        "Run with --context-parallel-size 1, or add the slicing here."
+                    )
+                r = torch.as_tensor(reward, dtype=k.dtype, device=k.device)
+                if r.numel() != k.numel():
+                    raise ValueError(
+                        f"per-token reward has {r.numel()} entries for a {k.numel()}-token "
+                        f"response; it must be aligned to the response, one value per token."
+                    )
+                k += r
             rewards.append(k)
         advantages, returns = get_advantages_and_returns_batch(
             total_lengths, response_lengths, values, rewards, args.gamma, args.lambd
