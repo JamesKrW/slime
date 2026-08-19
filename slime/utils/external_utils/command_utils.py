@@ -107,22 +107,28 @@ def execute_train(
     external_ray = get_bool_env_var("SLIME_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
 
-    exec_command(
-        "pkill -9 sglang; "
-        "sleep 3; "
-        f"{'' if external_ray else 'ray stop --force; '}"
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # cannot be run in CI, o/w kill the parent script
-        # TODO: do we really need this kill? (or can we instead kill slime)
-        # "pkill -9 python; "
-        "pkill -9 slime; "
-        "sleep 3; "
-        f"{'' if external_ray else 'pkill -9 ray; '}"
-        # "pkill -9 python; "
-        "pkill -9 slime; "
-        "pkill -9 redis; "
-        "true; "
-    )
+    # Clearing the box is only correct when this script owns it. Under
+    # SLIME_SCRIPT_EXTERNAL_RAY the cluster is shared -- somebody else's job is already
+    # running on it -- and `pkill -9 sglang` takes down their engines, from a process that
+    # reports nothing wrong and goes on to start its own. Every kill here is gated, not
+    # just the ray ones: sglang and slime belong to the other jobs just as much as ray does.
+    if not external_ray:
+        exec_command(
+            "pkill -9 sglang; "
+            "sleep 3; "
+            "ray stop --force; "
+            "pkill -9 ray; "
+            # cannot be run in CI, o/w kill the parent script
+            # TODO: do we really need this kill? (or can we instead kill slime)
+            # "pkill -9 python; "
+            "pkill -9 slime; "
+            "sleep 3; "
+            "pkill -9 ray; "
+            # "pkill -9 python; "
+            "pkill -9 slime; "
+            "pkill -9 redis; "
+            "true; "
+        )
 
     if not external_ray:
         exec_command(
