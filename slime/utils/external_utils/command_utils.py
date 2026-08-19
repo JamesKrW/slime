@@ -106,6 +106,13 @@ def execute_train(
         config = ExecuteTrainConfig()
     external_ray = get_bool_env_var("SLIME_SCRIPT_EXTERNAL_RAY")
     master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+    # Which Ray cluster to submit to. Only interesting alongside SLIME_SCRIPT_EXTERNAL_RAY:
+    # several slime jobs can then share a machine by each owning a head on its own
+    # dashboard port and its own slice of CUDA_VISIBLE_DEVICES. One shared head does not
+    # work -- slime's placement assumes it owns every GPU it can see, so a second job's
+    # trainer lands on a device that already holds somebody's inference engine and dies of
+    # CUDA OOM partway through the first training step.
+    ray_address = os.environ.get("SLIME_SCRIPT_RAY_ADDRESS", "http://127.0.0.1:8265")
 
     # Clearing the box is only correct when this script owns it. Under
     # SLIME_SCRIPT_EXTERNAL_RAY the cluster is shared -- somebody else's job is already
@@ -175,7 +182,7 @@ def execute_train(
         exec_command(
             f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
             f"{cmd_megatron_model_source}"
-            f'ray job submit --address="http://127.0.0.1:8265" '
+            f'ray job submit --address="{ray_address}" '
             f"--runtime-env-json='{runtime_env_json}' "
             f"-- python3 {train_script} "
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
