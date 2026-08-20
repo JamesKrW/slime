@@ -35,7 +35,7 @@ from .checkpoint import load_checkpoint, save_checkpoint
 from .cp_utils import reduce_train_step_metrics
 from .data import DataIterator, get_batch
 from .loss import ROLLOUT_TOP_P_TOKEN_KEYS, get_rollout_top_p_logprob_kwargs, loss_function
-from .model_provider import get_model_provider_func
+from .model_provider import critic_output_layer_owner, get_model_provider_func
 from .stateless_adam import StatelessAdam
 
 logger = logging.getLogger(__name__)
@@ -83,9 +83,9 @@ def _with_rollout_top_p_token_keys(args: Namespace, keys: Sequence[str]) -> list
 
 def _iter_critic_output_layers(model: Sequence[DDP]):
     for chunk_id, module in enumerate(unwrap_model(model)):
-        output_layer = getattr(module, "output_layer", None)
-        if output_layer is not None:
-            yield chunk_id, output_layer
+        owner = critic_output_layer_owner(module)
+        if owner is not None:
+            yield chunk_id, owner.output_layer
 
 
 try:

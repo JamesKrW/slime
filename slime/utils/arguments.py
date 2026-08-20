@@ -119,6 +119,15 @@ def get_slime_extra_args_provider(add_custom_arguments=None):
                 default="{}",
                 help="Extra environment variables for training process, e.g. PyTorch memory management ones.",
             )
+            parser.add_argument(
+                "--megatron-to-hf-mode",
+                choices=["raw", "bridge"],
+                default="raw",
+                help=(
+                    "Use main's native model/weight conversion by default. Select 'bridge' only "
+                    "for architectures that still require Megatron-Bridge."
+                ),
+            )
             # Delta weight sync.
             parser.add_argument(
                 "--update-weight-mode",
@@ -1809,6 +1818,10 @@ def slime_validate_args(args):
         if args.opd_teacher_load is not None:
             raise ValueError("--opd-teacher-load is set but --use-opd is not enabled. Please add --use-opd flag.")
 
+    bridge_mode = getattr(args, "megatron_to_hf_mode", "raw") == "bridge"
+    if bridge_mode and args.load is None:
+        args.load = args.ref_load or args.hf_checkpoint
+
     load_is_megatron = (
         args.load is not None
         and os.path.exists(args.load)
@@ -1817,7 +1830,7 @@ def slime_validate_args(args):
     load_is_hf = (
         args.load is not None and os.path.isdir(args.load) and os.path.exists(os.path.join(args.load, "config.json"))
     )
-    if load_is_hf:
+    if load_is_hf and not bridge_mode:
         from slime.backends.megatron_utils.hf_to_megatron import supports_hf_weight_loading
 
         load_is_hf = supports_hf_weight_loading(args.load)

@@ -17,6 +17,7 @@ from megatron.core.transformer.spec_utils import import_module
 from megatron.core.transformer.transformer_config import TransformerConfig
 from megatron.training.arguments import core_transformer_config_from_args
 
+from slime.utils.megatron_bridge_utils import patch_auto_bridge_hf_config, patch_qwen3_vl_rotary_embedding
 from slime.utils.misc import load_function
 
 _INDEXER_DIRECT_SUBMODULE_NAMES = frozenset(
@@ -50,6 +51,14 @@ def _is_indexer_parameter(name: str) -> bool:
         if "indexer" in attention_parts[:-1]:
             return True
     return False
+
+
+def critic_output_layer_owner(model):
+    """Return the module that owns the language-model output head."""
+    for candidate in (model, getattr(model, "language_model", None)):
+        if candidate is not None and getattr(candidate, "output_layer", None) is not None:
+            return candidate
+    return None
 
 
 # Adapt from https://github.com/volcengine/verl/blob/c3b20575d2bc815fcccd84bddb4c0401fc4b632b/verl/models/llama/megatron/layers/parallel_linear.py#L82
@@ -89,6 +98,20 @@ class LinearForLastLayer(torch.nn.Linear):
         return logits, None
 
 
+def _replace_critic_output_layer(model) -> None:
+    owner = critic_output_layer_owner(model)
+    if owner is None:
+        raise RuntimeError(
+            f"{type(model).__name__} exposes no output_layer to replace with the critic's value head"
+        )
+    config = owner.config
+    owner.output_layer = LinearForLastLayer(
+        input_size=config.hidden_size,
+        output_size=1,
+        config=config,
+    )
+
+
 def _get_model_provider_func(
     args: argparse.Namespace,
     role: Literal["actor", "critic"] = "actor",
@@ -108,12 +131,54 @@ def _get_model_provider_func(
                 model = custom_model_provider(pre_process=pre_process, post_process=post_process)
             # Apply critic output layer if needed
             if post_process and role == "critic":
-                model.output_layer = LinearForLastLayer(
-                    input_size=model.config.hidden_size, output_size=1, config=model.config
-                )
+                _replace_critic_output_layer(model)
             return model
 
         return wrapped_model_provider
+
+    # Main now uses native model providers and converters. Keep Megatron-Bridge only as
+    # an explicit fallback for architectures not yet covered natively (currently the
+    # Qwen3-VL model used by VAGEN); all other modes stay on main's implementation.
+    if getattr(args, "megatron_to_hf_mode", "raw") == "bridge":
+        patch_qwen3_vl_rotary_embedding()
+        from megatron.bridge import AutoBridge
+
+        bridge = patch_auto_bridge_hf_config(
+            AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
+        )
+        provider = bridge.to_megatron_provider(load_weights=False)
+
+        for name in (
+            "tensor_model_parallel_size",
+            "pipeline_model_parallel_size",
+            "expert_model_parallel_size",
+            "expert_tensor_parallel_size",
+            "sequence_parallel",
+            "context_parallel_size",
+            "variable_seq_lengths",
+            "moe_token_dispatcher_type",
+            "attention_backend",
+            "moe_aux_loss_coeff",
+            "freeze_language_model",
+            "freeze_vision_model",
+            "freeze_vision_projection",
+        ):
+            value = getattr(args, name, None)
+            if value is not None and hasattr(provider, name):
+                setattr(provider, name, value)
+        if getattr(args, "decoder_first_pipeline_num_layers", None) is not None:
+            provider.num_layers_in_first_pipeline_stage = args.decoder_first_pipeline_num_layers
+        if getattr(args, "decoder_last_pipeline_num_layers", None) is not None:
+            provider.num_layers_in_last_pipeline_stage = args.decoder_last_pipeline_num_layers
+        provider.finalize()
+
+        def bridge_model_provider(pre_process=True, post_process=True, vp_stage=None):
+            model = provider.provide(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
+            if post_process and role == "critic":
+                _replace_critic_output_layer(model)
+            return model
+
+        return bridge_model_provider
 
     def model_provider(pre_process: bool = True, post_process: bool = True, vp_stage: int | None = None) -> GPTModel:
         """Builds the model.
@@ -147,9 +212,7 @@ def _get_model_provider_func(
                 if callable(result) and "pre_process" in inspect.signature(result).parameters:
                     model = result(pre_process=pre_process, post_process=post_process, vp_stage=vp_stage)
                     if post_process and role == "critic":
-                        model.output_layer = LinearForLastLayer(
-                            input_size=config.hidden_size, output_size=1, config=config
-                        )
+                        _replace_critic_output_layer(model)
                     return model
                 transformer_layer_spec = result
         else:
@@ -232,7 +295,7 @@ def _get_model_provider_func(
             model = GPTModel(**kwargs)
 
         if post_process and role == "critic":
-            model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)
+            _replace_critic_output_layer(model)
 
         return model
 
