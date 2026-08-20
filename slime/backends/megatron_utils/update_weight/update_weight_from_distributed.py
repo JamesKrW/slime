@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import socket
 import time
 from argparse import Namespace
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -15,7 +14,6 @@ from tqdm import tqdm
 
 from slime.utils import accelerator
 from slime.utils.distributed_utils import get_gloo_group, init_process_group
-from slime.utils.http_utils import _wrap_ipv6
 
 from ..megatron_to_hf import convert_to_hf
 from .common import all_gather_param, named_params_and_buffers
@@ -283,10 +281,21 @@ def connect_rollout_engines_from_distributed(
         engine_gpu_counts = [args.rollout_num_gpus_per_engine] * len(rollout_engines)
 
     master_address = ray._private.services.get_node_ip_address()
-    with socket.socket() as sock:
-        sock.bind(("", 0))
-        master_port = sock.getsockname()[1]
     world_size = sum(engine_gpu_counts) + 1  # +1 for training rank 0
+
+    # Let TCPStore bind and keep the ephemeral rendezvous port itself.  Picking a
+    # port with a temporary AF_INET socket is racy after that socket is closed,
+    # and is also incorrect when Ray advertises an IPv6 node address.  In long
+    # runs that race can leave every participant waiting on a port with no store.
+    store = dist.TCPStore(
+        master_address,
+        0,
+        world_size,
+        True,
+        timeout=dist.default_pg_timeout,
+        wait_for_workers=False,
+    )
+    master_port = store.port
 
     # Compute cumulative rank offsets: engine i starts at cumulative[i] + 1.
     cumulative = [0]
@@ -307,7 +316,7 @@ def connect_rollout_engines_from_distributed(
     ]
     model_update_groups = init_process_group(
         backend=backend,
-        init_method=f"tcp://{_wrap_ipv6(master_address)}:{master_port}",
+        store=dist.PrefixStore(group_name, store),
         world_size=world_size,
         rank=0,
         group_name=group_name,
