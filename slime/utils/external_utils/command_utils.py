@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import random
+import shlex
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -203,8 +204,9 @@ def check_has_nvlink():
 
 
 def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, run_id: str | None = None):
-    if not os.environ.get("WANDB_API_KEY"):
-        print("Skip wandb configuration since WANDB_API_KEY is not found")
+    enabled = os.environ.get("WANDB_ENABLED", "").lower() in {"1", "true", "yes", "on"}
+    if not enabled and not os.environ.get("WANDB_API_KEY"):
+        print("Skip wandb configuration since WANDB_ENABLED/WANDB_API_KEY is not set")
         return ""
 
     test_file = Path(test_file)
@@ -218,15 +220,21 @@ def get_default_wandb_args(test_file: str, run_name_prefix: str | None = None, r
     if (x := run_name_prefix) is not None:
         wandb_run_name = f"{x}_{wandb_run_name}"
 
-    # Use the actual key value from environment to avoid shell expansion issues
-    wandb_key = os.environ.get("WANDB_API_KEY")
-    return (
-        "--use-wandb "
-        f"--wandb-project slime-{test_name} "
-        f"--wandb-group {wandb_run_name} "
-        f"--wandb-key '{wandb_key}' "
-        "--disable-wandb-random-suffix "
-    )
+    # Authentication is intentionally left to W&B's environment/.netrc handling.
+    # Putting the API key on the command line leaks it through execute_train's logs.
+    project = os.environ.get("WANDB_PROJECT", f"slime-{test_name}")
+    args = [
+        "--use-wandb",
+        "--wandb-mode", os.environ.get("WANDB_MODE", "online"),
+        "--wandb-project", project,
+        "--wandb-group", wandb_run_name,
+        "--disable-wandb-random-suffix",
+    ]
+    if host := os.environ.get("WANDB_BASE_URL"):
+        args.extend(("--wandb-host", host))
+    if team := os.environ.get("WANDB_ENTITY"):
+        args.extend(("--wandb-team", team))
+    return " ".join(shlex.quote(x) for x in args) + " "
 
 
 def create_run_id() -> str:
