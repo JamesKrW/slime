@@ -8,6 +8,8 @@ import os
 import random
 import shlex
 import time
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -142,8 +144,10 @@ def execute_train(
         exec_command(
             # will prevent ray from buffering stdout/stderr
             f"export PYTHONUNBUFFERED=1 && "
-            f"ray start --head --node-ip-address {master_addr} --num-gpus {num_gpus_per_node} --disable-usage-stats"
+            f"ray start --head --node-ip-address {master_addr} --dashboard-host 127.0.0.1 "
+            f"--num-gpus {num_gpus_per_node} --disable-usage-stats"
         )
+        ray_address = _wait_for_ray_dashboard(ray_address)
 
     if (f := before_ray_job_submit) is not None:
         f()
@@ -155,7 +159,7 @@ def execute_train(
                 "RAY_USE_UVLOOP": "0",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
-                "no_proxy": f"127.0.0.1,{master_addr}",
+                "no_proxy": f"127.0.0.1,localhost,::1,{master_addr}",
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
                 **(
@@ -181,7 +185,7 @@ def execute_train(
             else ""
         )
         exec_command(
-            f"export no_proxy=127.0.0.1 && export PYTHONUNBUFFERED=1 && "
+            f"export no_proxy=127.0.0.1,localhost,::1 && export PYTHONUNBUFFERED=1 && "
             f"{cmd_megatron_model_source}"
             f'ray job submit --address="{ray_address}" '
             f"--runtime-env-json='{runtime_env_json}' "
@@ -189,6 +193,37 @@ def execute_train(
             f"{'${MODEL_ARGS[@]}' if megatron_model_type is not None else ''} "
             f"{train_args}"
         )
+
+
+def _wait_for_ray_dashboard(address: str, timeout_seconds: float = 60.0) -> str:
+    """Wait until a newly started Ray dashboard accepts job submissions.
+
+    Recent Ray releases return from ``ray start`` before the dashboard has bound its
+    HTTP socket.  Submitting immediately is therefore racy on a cold local cluster.
+    Bypass ambient proxies explicitly because the dashboard is always node-local here.
+    """
+
+    deadline = time.monotonic() + timeout_seconds
+    candidates = [address.rstrip("/")]
+    if "127.0.0.1" in address:
+        # Some IPv6-first hosts make Ray bind the dashboard to ::1 even when the
+        # requested node/dashboard address is 127.0.0.1.
+        candidates.append(address.rstrip("/").replace("127.0.0.1", "[::1]"))
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        for candidate in candidates:
+            url = f"{candidate}/api/version"
+            try:
+                with opener.open(url, timeout=2) as response:
+                    if response.status == 200:
+                        return candidate
+            except (OSError, urllib.error.URLError) as exc:
+                last_error = exc
+        time.sleep(0.5)
+    raise RuntimeError(
+        f"Ray dashboard did not become ready at any of {candidates}: {last_error}"
+    )
 
 
 def _parse_extra_env_vars(text: str):

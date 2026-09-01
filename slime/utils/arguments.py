@@ -1914,7 +1914,11 @@ def slime_validate_args(args):
     if args.rollout_external and not args.debug_train_only:
         apply_external_engine_info_to_args(args, logger=logger)
 
-    args.use_critic = args.advantage_estimator == "ppo"
+    # A rollout-only run never computes PPO advantages or updates a value model.  Do not
+    # allocate a critic merely because the eventual training recipe uses PPO: with zero
+    # configured actor GPUs the empty critic group also has no rollout id, which made the
+    # debug path fail before SGLang was launched.
+    args.use_critic = args.advantage_estimator == "ppo" and not args.debug_rollout_only
     # Critic always uses the same GPU count as actor.
     args.critic_num_gpus_per_node = args.actor_num_gpus_per_node
     args.critic_num_nodes = args.actor_num_nodes

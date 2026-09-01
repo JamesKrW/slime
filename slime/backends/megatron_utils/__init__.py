@@ -3,8 +3,10 @@ import logging
 import torch
 
 from slime.utils import accelerator
+from slime.utils.torch_memory_saver_utils import patch_nested_regions
 
 accelerator.initialize_accelerator()
+patch_nested_regions()
 
 try:
     import deep_ep

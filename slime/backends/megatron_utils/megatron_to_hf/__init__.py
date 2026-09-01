@@ -24,7 +24,12 @@ def convert_to_hf(args, model_name, name, param, quantization_config=None, trans
     hf_name = name
     while hf_name.startswith("module."):
         hf_name = hf_name.removeprefix("module.")
-    if hf_name.startswith("model.visual."):
+    # Bridge-backed VLMs keep their HuggingFace vision tower intact.  Qwen2.5-VL
+    # exposes it as ``visual.*`` while newer VLMs may expose ``model.visual.*``;
+    # both namespaces are already understood by SGLang and require no tensor
+    # transformation.  Handle these before vocabulary padding removal and the
+    # language-model-specific exporters.
+    if hf_name.startswith(("visual.", "model.visual.")):
         return [(hf_name, param)]
 
     param = remove_padding(name, param, args.vocab_size)

@@ -3,6 +3,13 @@ import torch
 
 
 def convert_qwen2_to_hf(args, name, param):
+    # Megatron-Bridge wraps Qwen2.5-VL's text tower in ``language_model`` while
+    # the native Qwen model uses the historical flat Megatron namespace.  The
+    # tensors and HF destination names are otherwise identical, so normalize
+    # only this wrapper before applying the existing Qwen2 mapping.
+    if name.startswith("module.module.language_model."):
+        name = "module.module." + name.removeprefix("module.module.language_model.")
+
     if name == "module.module.embedding.word_embeddings.weight":
         return [("model.embed_tokens.weight", param)]
     if name == "module.module.output_layer.weight":

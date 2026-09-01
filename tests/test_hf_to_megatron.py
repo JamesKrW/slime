@@ -30,7 +30,7 @@ from slime.backends.megatron_utils.hf_to_megatron.qwen import (
     qwen_moe_hf_tensor,
 )
 from slime.backends.megatron_utils.hf_to_megatron.qwen3_next import qwen3_next_hf_tensor
-from slime.backends.megatron_utils.megatron_to_hf import _convert_to_hf_core
+from slime.backends.megatron_utils.megatron_to_hf import _convert_to_hf_core, convert_to_hf
 from slime.backends.megatron_utils.megatron_to_hf.deepseekv3 import convert_deepseekv3_to_hf
 from slime.backends.megatron_utils.megatron_to_hf.glm4 import convert_glm4_to_hf
 from slime.backends.megatron_utils.megatron_to_hf.glm4moe import convert_glm4moe_to_hf
@@ -72,6 +72,7 @@ _EXPORT_ARGS = types.SimpleNamespace(
     num_attention_heads=4,
     num_query_groups=2,
     num_layers=2,
+    vocab_size=8,
     q_lora_rank=None,
 )
 
@@ -197,6 +198,36 @@ def test_qwen2_moe_parameter_updates_use_the_moe_exporter():
     ]
     assert torch.equal(converted[0][1], parameter[:6])
     assert torch.equal(converted[1][1], parameter[6:])
+
+
+@pytest.mark.unit
+def test_qwen25_vl_bridge_visual_parameter_is_exported_verbatim():
+    parameter = torch.randn(4, 3)
+
+    converted = convert_to_hf(
+        _EXPORT_ARGS,
+        "Qwen2.5-VL-7B-Instruct",
+        "module.module.visual.patch_embed.proj.weight",
+        parameter,
+    )
+
+    assert [name for name, _ in converted] == ["visual.patch_embed.proj.weight"]
+    assert converted[0][1] is parameter
+
+
+@pytest.mark.unit
+def test_qwen25_vl_bridge_language_wrapper_uses_qwen2_mapping():
+    parameter = torch.randn(8, 8)
+
+    converted = convert_to_hf(
+        _EXPORT_ARGS,
+        "Qwen2.5-VL-7B-Instruct",
+        "module.module.language_model.decoder.layers.0.self_attention.linear_proj.weight",
+        parameter,
+    )
+
+    assert [name for name, _ in converted] == ["model.layers.0.self_attn.o_proj.weight"]
+    assert converted[0][1] is parameter
 
 
 @pytest.mark.unit

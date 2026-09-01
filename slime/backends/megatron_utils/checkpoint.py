@@ -139,7 +139,18 @@ def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
         patch_qwen3_vl_rotary_embedding()
         bridge = patch_auto_bridge_hf_config(AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True))
         with patch_megatron_model(ddp_model):
-            bridge.load_hf_weights(ddp_model)
+            # The PPO critic intentionally replaces the vocabulary projection
+            # with a scalar value head before the optimizer is constructed.
+            # Its random initialization must survive the HF actor-weight load.
+            # Actor output heads have matching shapes, so this whitelist has no
+            # effect on normal actor loading.
+            bridge.load_hf_weights(
+                ddp_model,
+                allowed_mismatched_params=[
+                    "language_model.output_layer.weight",
+                    "language_model.output_layer.bias",
+                ],
+            )
     else:
         from slime.backends.megatron_utils.hf_to_megatron import load_hf_weights
 

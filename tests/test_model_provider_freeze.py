@@ -123,5 +123,19 @@ def test_freeze_indexer_rejects_unrecognized_attention(monkeypatch):
         model_provider.freeze_model_params(model, args)
 
 
+@pytest.mark.unit
+def test_critic_output_layer_matches_bias_free_value_head(monkeypatch):
+    model_provider = _load_model_provider(monkeypatch)
+    model = types.SimpleNamespace(
+        config=types.SimpleNamespace(hidden_size=4, sequence_parallel=False, init_method_std=0.02),
+        output_layer=torch.nn.Linear(4, 8),
+    )
+
+    model_provider._replace_critic_output_layer(model)
+
+    assert model.output_layer.weight.shape == (1, 4)
+    assert model.output_layer.bias is None
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__]))

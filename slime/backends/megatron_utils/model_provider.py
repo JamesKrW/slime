@@ -109,6 +109,7 @@ def _replace_critic_output_layer(model) -> None:
         input_size=config.hidden_size,
         output_size=1,
         config=config,
+        bias=False,
     )
 
 
