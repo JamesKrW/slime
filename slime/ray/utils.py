@@ -39,9 +39,16 @@ RAY_DEFAULT_ENV_VARS = {
     ),
 }
 
+_INHERITED_NETWORK_ENV_VARS = ("SLIME_HOST_IP", "no_proxy", "NO_PROXY")
+
 
 def add_default_ray_env_vars(env_vars: dict[str, str] | None = None) -> dict[str, str]:
-    return RAY_DEFAULT_ENV_VARS | (env_vars or {})
+    inherited = {
+        name: os.environ[name]
+        for name in _INHERITED_NETWORK_ENV_VARS
+        if os.environ.get(name)
+    }
+    return RAY_DEFAULT_ENV_VARS | inherited | (env_vars or {})
 
 
 def ray_noset_visible_devices(env_vars=os.environ):

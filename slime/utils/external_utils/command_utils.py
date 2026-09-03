@@ -94,6 +94,25 @@ class ExecuteTrainConfig:
     extra_env_vars: str = ""
 
 
+def _build_no_proxy(master_addr: str) -> str:
+    """Preserve scheduler bypasses while adding Slime's internal endpoints."""
+
+    values = (
+        "127.0.0.1,localhost,::1",
+        os.environ.get("no_proxy", ""),
+        os.environ.get("NO_PROXY", ""),
+        master_addr,
+        os.environ.get("SLIME_HOST_IP", ""),
+    )
+    entries: list[str] = []
+    for value in values:
+        for entry in value.split(","):
+            entry = entry.strip()
+            if entry and entry not in entries:
+                entries.append(entry)
+    return ",".join(entries)
+
+
 def execute_train(
     train_args: str,
     num_gpus_per_node: int,
@@ -116,6 +135,7 @@ def execute_train(
     # trainer lands on a device that already holds somebody's inference engine and dies of
     # CUDA OOM partway through the first training step.
     ray_address = os.environ.get("SLIME_SCRIPT_RAY_ADDRESS", "http://127.0.0.1:8265")
+    no_proxy = _build_no_proxy(master_addr)
 
     # Clearing the box is only correct when this script owns it. Under
     # SLIME_SCRIPT_EXTERNAL_RAY the cluster is shared -- somebody else's job is already
@@ -159,7 +179,8 @@ def execute_train(
                 "RAY_USE_UVLOOP": "0",
                 "CUDA_DEVICE_MAX_CONNECTIONS": "1",
                 "NCCL_NVLS_ENABLE": str(int(check_has_nvlink())),
-                "no_proxy": f"127.0.0.1,localhost,::1,{master_addr}",
+                "no_proxy": no_proxy,
+                "NO_PROXY": no_proxy,
                 # This is needed by megatron / torch distributed in multi-node setup
                 "MASTER_ADDR": master_addr,
                 **(
@@ -185,7 +206,8 @@ def execute_train(
             else ""
         )
         exec_command(
-            f"export no_proxy=127.0.0.1,localhost,::1 && export PYTHONUNBUFFERED=1 && "
+            f"export no_proxy={shlex.quote(no_proxy)} && export NO_PROXY={shlex.quote(no_proxy)} && "
+            f"export PYTHONUNBUFFERED=1 && "
             f"{cmd_megatron_model_source}"
             f'ray job submit --address="{ray_address}" '
             f"--runtime-env-json='{runtime_env_json}' "

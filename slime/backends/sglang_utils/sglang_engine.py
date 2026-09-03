@@ -18,6 +18,13 @@ from slime.utils.http_utils import get_host_info
 logger = logging.getLogger(__name__)
 
 
+def _direct_request(method: str, url: str, **kwargs):
+    """Send an intra-cluster request without consulting proxy variables."""
+    with requests.Session() as session:
+        session.trust_env = False
+        return session.request(method, url, **kwargs)
+
+
 def get_base_gpu_id(args, rank):
     num_gpus = min(args.num_gpus_per_node, args.rollout_num_gpus_per_engine)
     if args.colocate:
@@ -71,9 +78,18 @@ def _wait_server_healthy(base_url, api_key, is_process_alive):
     }
 
     with requests.Session() as session:
+        # SGLang binds to the node's numeric IP, which on many clusters is an
+        # IPv6 address not covered by NO_PROXY; routing this health probe
+        # through the egress proxy leaves engine initialization waiting
+        # forever even though Uvicorn is already healthy.
+        session.trust_env = False
         while True:
             try:
-                response = session.get(f"{base_url}/health_generate", headers=headers)
+                response = session.get(
+                    f"{base_url}/health_generate",
+                    headers=headers,
+                    timeout=5,
+                )
                 if response.status_code == 200:
                     break
             except requests.RequestException:
@@ -192,9 +208,11 @@ class SGLangEngine(RayActor):
                         "cannot register it to the PD router."
                     )
                 payload["bootstrap_port"] = bootstrap_port
-            response = requests.post(
+            response = _direct_request(
+                "POST",
                 f"http://{self.router_ip}:{self.router_port}/workers",
                 json=payload,
+                timeout=30,
             )
             response.raise_for_status()
 
@@ -212,7 +230,7 @@ class SGLangEngine(RayActor):
             return
 
         url = f"http://{self.server_host}:{self.server_port}/{endpoint}"
-        response = requests.post(url, json=payload or {})
+        response = _direct_request("POST", url, json=payload or {})
         try:
             response.raise_for_status()
         except requests.exceptions.HTTPError as e:
@@ -235,7 +253,8 @@ class SGLangEngine(RayActor):
         if self.node_rank != 0:
             return True
 
-        response = requests.get(
+        response = _direct_request(
+            "GET",
             f"http://{self.server_host}:{self.server_port}/health_generate",
             timeout=timeout,
         )
@@ -274,7 +293,11 @@ class SGLangEngine(RayActor):
         # flush cache will not return status_code 200 when there are pending requests
         for _ in range(60):
             try:
-                response = requests.get(f"http://{self.server_host}:{self.server_port}/flush_cache")
+                response = _direct_request(
+                    "GET",
+                    f"http://{self.server_host}:{self.server_port}/flush_cache",
+                    timeout=30,
+                )
                 if response.status_code == 200:
                     break
                 logger.info(f"Error flushing cache: HTTP {response.status_code} {response.text!r}")
@@ -302,11 +325,19 @@ class SGLangEngine(RayActor):
             worker_url = f"http://{self.server_host}:{self.server_port}"
             response = None
             try:
-                all_workers = requests.get(f"http://{self.router_ip}:{self.router_port}/workers").json()["workers"]
+                all_workers = _direct_request(
+                    "GET",
+                    f"http://{self.router_ip}:{self.router_port}/workers",
+                    timeout=30,
+                ).json()["workers"]
                 for worker in all_workers:
                     if worker["url"] == worker_url:
                         worker_id = worker["id"]
-                        response = requests.delete(f"http://{self.router_ip}:{self.router_port}/workers/{worker_id}")
+                        response = _direct_request(
+                            "DELETE",
+                            f"http://{self.router_ip}:{self.router_port}/workers/{worker_id}",
+                            timeout=30,
+                        )
                         break
                 else:
                     logger.warning(f"Worker {worker_url} not found in router during shutdown.")
@@ -321,7 +352,7 @@ class SGLangEngine(RayActor):
         if self.node_rank != 0:
             return
         url = f"http://{self.server_host}:{self.server_port}/get_weight_version"
-        response = requests.get(url)
+        response = _direct_request("GET", url)
         response.raise_for_status()
         return response.json()["weight_version"]
 
@@ -423,14 +454,22 @@ class SGLangEngine(RayActor):
     def pause_generation(self):
         if self.node_rank != 0:
             return
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/pause_generation", json={})
+        response = _direct_request(
+            "POST",
+            f"http://{self.server_host}:{self.server_port}/pause_generation",
+            json={},
+        )
         response.raise_for_status()
         return response
 
     def continue_generation(self):
         if self.node_rank != 0:
             return
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/continue_generation", json={})
+        response = _direct_request(
+            "POST",
+            f"http://{self.server_host}:{self.server_port}/continue_generation",
+            json={},
+        )
         response.raise_for_status()
         return response
 
@@ -469,7 +508,8 @@ class SGLangEngine(RayActor):
     ):
         if self.node_rank != 0:
             return
-        response = requests.post(
+        response = _direct_request(
+            "POST",
             f"http://{self.server_host}:{self.server_port}/start_profile",
             json={
                 "output_dir": output_dir,
@@ -487,7 +527,11 @@ class SGLangEngine(RayActor):
     def stop_profile(self):
         if self.node_rank != 0:
             return
-        response = requests.post(f"http://{self.server_host}:{self.server_port}/stop_profile", json={})
+        response = _direct_request(
+            "POST",
+            f"http://{self.server_host}:{self.server_port}/stop_profile",
+            json={},
+        )
         response.raise_for_status()
         return response
 

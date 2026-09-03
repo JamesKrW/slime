@@ -359,9 +359,14 @@ async def abort(args: Namespace, rollout_id: int) -> list[list[Sample]]:
         # for partial rollout, collect the partial samples into the data buffer
         for task in done:
             group = task.result()
-            for sample in group:
-                if sample.response and "start_rollout_id" not in sample.metadata:
-                    sample.metadata["start_rollout_id"] = rollout_id
+            for entry in group:
+                # Same Sample / list[Sample] fan-out documented in generate_rollout_group:
+                # multi-turn agent rollouts make this list[list[Sample]], so iterating a
+                # group once yields lists. Without flattening, --partial-rollout dies with
+                # "'list' object has no attribute 'response'".
+                for sample in entry if isinstance(entry, list) else (entry,):
+                    if sample.response and "start_rollout_id" not in sample.metadata:
+                        sample.metadata["start_rollout_id"] = rollout_id
             aborted_samples.append(group)
             count += len(group)
 

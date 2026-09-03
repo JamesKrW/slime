@@ -1,4 +1,5 @@
 import importlib
+import os
 import subprocess
 from collections import defaultdict
 from collections.abc import Callable, Iterable
@@ -7,7 +8,7 @@ from typing import Any
 
 import torch
 
-from slime.utils.http_utils import is_port_available
+from slime.utils.http_utils import SLIME_HOST_IP_ENV, is_port_available
 
 
 def decode_int32_meta_array(meta_info: dict[str, Any], keys: str | Iterable[str]) -> torch.Tensor | None:
@@ -86,6 +87,9 @@ def exec_command(cmd: str, capture_output: bool = False) -> str | None:
 
 
 def get_current_node_ip():
+    if explicit_address := os.getenv(SLIME_HOST_IP_ENV):
+        return explicit_address.strip("[]")
+
     # Lazy import so CPU-only code paths (rm_hub scoring, plugin contracts,
     # etc.) can use other helpers in this module without requiring ray.
     import ray

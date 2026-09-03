@@ -21,6 +21,45 @@ def _write_yaml(data: dict) -> str:
     return f.name
 
 
+def test_internal_sglang_requests_ignore_environment_proxies(monkeypatch):
+    from slime.backends.sglang_utils import sglang_engine
+
+    observed = []
+
+    class FakeResponse:
+        status_code = 200
+
+    class FakeSession:
+        trust_env = True
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            return None
+
+        def request(self, method, url, **kwargs):
+            observed.append((self.trust_env, method, url, kwargs))
+            return FakeResponse()
+
+        def get(self, url, **kwargs):
+            observed.append((self.trust_env, "GET", url, kwargs))
+            return FakeResponse()
+
+    monkeypatch.setattr(sglang_engine.requests, "Session", FakeSession)
+
+    sglang_engine._direct_request("POST", "http://[fd00::1]:30000/test", json={})
+    sglang_engine._wait_server_healthy(
+        "http://[fd00::1]:30000",
+        api_key=None,
+        is_process_alive=lambda: True,
+    )
+
+    assert len(observed) == 2
+    assert all(trust_env is False for trust_env, *_ in observed)
+    assert observed[1][3]["timeout"] == 5
+
+
 class TestSglangConfigUpdateWeights:
     def test_update_weights_default_true(self):
         """Models without explicit update_weights should default to True."""

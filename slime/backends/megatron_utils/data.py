@@ -291,6 +291,10 @@ def log_rollout_data(
                 "num_microbatches",
                 "micro_batch_indices",
                 "source_names",
+                # VLM/VAGEN datasets keep the original structured chat prompt here.
+                # It is transport metadata, not a numeric metric; attempting sum()
+                # on a list of message lists raises before the first actor update.
+                "prompt",
                 # DP-local view of `raw_reward`, which this loop already logs;
                 # both reduce to the same mean, so skip the duplicate metric.
                 "local_raw_reward",
@@ -337,7 +341,13 @@ def log_rollout_data(
                     per_rank_sum = tensor.mean() * cp_size * count
                     sum_value = per_rank_sum.item()
                 else:
-                    sum_value = sum(val)
+                    if key == "rewards" and val and isinstance(val[0], (list, tuple, np.ndarray)):
+                        # Token-level estimators carry one reward vector per
+                        # sample.  The scalar reward metric is the mean of the
+                        # per-sample totals, matching the scalar-reward path.
+                        sum_value = sum(float(np.asarray(sample_rewards).sum()) for sample_rewards in val)
+                    else:
+                        sum_value = sum(val)
                 log_dict[key] = (sum_value, count)
             elif isinstance(val, torch.Tensor):
                 # Scalar tensor (one per rank): treat as count=1.
